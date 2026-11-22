@@ -1,0 +1,14 @@
+# ─── Antra Flux — Cloudflare Pages configuration ─────────────────────────────
+# Used by `npx wrangler pages deploy out` and by the Pages git integration.
+# Free plan: unlimited static requests + 100k function requests/day.
+
+name = "antra-flux"
+compatibility_date = "2026-11-01"
+pages_build_output_dir = "out"
+
+# Non-secret vars (override in the dashboard → Settings → Environment variables)
+[vars]
+# Site-wide gateway. Leave unset to serve the built-in demo catalog;
+# visitors can also connect their own gateway per-browser in Settings.
+# ANTRA_GATEWAY_URL = "https://your-gateway.example.com"
+# ANTRA_API_KEY = ""
