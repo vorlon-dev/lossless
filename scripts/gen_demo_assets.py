@@ -6,8 +6,9 @@ import numpy as np
 import subprocess, os, math, random
 from PIL import Image, ImageDraw, ImageFilter
 
-OUT_AUDIO = "/home/z/my-project/public/demo-audio"
-OUT_COVERS = "/home/z/my-project/public/covers"
+HERE = os.path.dirname(os.path.abspath(__file__))
+OUT_AUDIO = os.path.normpath(os.path.join(HERE, "..", "public", "demo-audio"))
+OUT_COVERS = os.path.normpath(os.path.join(HERE, "..", "public", "covers"))
 os.makedirs(OUT_AUDIO, exist_ok=True)
 os.makedirs(OUT_COVERS, exist_ok=True)
 SR = 44100

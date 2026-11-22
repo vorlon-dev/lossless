@@ -1,14 +1,29 @@
-# ─── Antra Flux — Cloudflare Pages configuration ─────────────────────────────
-# Used by `npx wrangler pages deploy out` and by the Pages git integration.
-# Free plan: unlimited static requests + 100k function requests/day.
+# ─── Antra Flux — Cloudflare Workers configuration ───────────────────────────
+# One free Workers project = static site (out/) + public /api/* endpoints.
+#   • Static asset requests: unlimited, free
+#   • Worker runs ONLY for /api/*: 100k requests/day free
+#
+# Local CLI:    bash scripts/export-static.sh && npx wrangler deploy
+# Git (CI):     Workers Builds → Build command: bash scripts/export-static.sh
+#               Deploy command: npx wrangler deploy   (the default)
+#
+# NOTE: this is a Workers-style wrangler.toml. `wrangler pages deploy` is NOT
+# needed anymore — `npx wrangler deploy` is the one and only deploy command.
 
 name = "antra-flux"
+main = "worker/index.ts"
 compatibility_date = "2026-11-01"
-pages_build_output_dir = "out"
 
-# Non-secret vars (override in the dashboard → Settings → Environment variables)
+[assets]
+directory = "./out"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api", "/api/*"]
+
+# Non-secret vars (override in dashboard → your Worker → Settings → Variables
+# and Secrets; secrets: `npx wrangler secret put ANTRA_GATEWAY_URL`)
 [vars]
-# Site-wide gateway. Leave unset to serve the built-in demo catalog;
+# Site-wide audio gateway. Leave unset to serve the built-in demo catalog;
 # visitors can also connect their own gateway per-browser in Settings.
 # ANTRA_GATEWAY_URL = "https://your-gateway.example.com"
 # ANTRA_API_KEY = ""

@@ -37,8 +37,12 @@ else
 fi
 
 echo "→ Static site ready in ./out"
-echo "   Deploy with one of:"
-echo "     npx wrangler pages deploy out        (CLI)"
-echo "     or drag-and-drop ./out at dash.cloudflare.com → Workers & Pages → Pages"
+echo "   Deploy with one command:"
+echo "     npx wrangler deploy                  (CLI — site + /api Worker)"
+echo "   or via Git integration: build command 'bash scripts/export-static.sh',"
+echo "   deploy command 'npx wrangler deploy' (Workers Builds default)."
 
-# functions/ ships alongside out/ — wrangler pages deploy picks it up automatically.
+# out/ + worker/index.ts are deployed together by `npx wrangler deploy`.
+
+# Legacy Pages path: functions/ is only used by `wrangler pages deploy out`
+# (not needed for the recommended `npx wrangler deploy`).

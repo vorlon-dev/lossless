@@ -8,14 +8,14 @@ An open, high-tech **lossless streaming platform** built on top of the
   visualizer, hi-res quality badges).
 - **Open REST API** — CORS-enabled, HTTP-Range-aware endpoints
   (`/api/search`, `/api/stream/{id}`, …) that **any music app** can plug into.
-- **Cloudflare-ready** — deploys free on Cloudflare Pages (static site + edge
-  Functions). No paid plan needed.
+- **Cloudflare-ready** — deploys free as a single Cloudflare **Workers**
+  project (static assets + API Worker). No paid plan needed.
 - **Antra gateway** — a small Python service (`gateway/`) that wraps the
   actual Antra engine for catalog search, metadata and lossless stream
   resolution, hosted on your PC / VPS / any free Python host.
 
 ```
-browser / music apps ──► Cloudflare Pages (site + /api edge Functions)
+browser / music apps ──► Cloudflare Workers (static assets + /api Worker)
                                     │  ANTRA_GATEWAY_URL
                                     ▼
                          Antra Flux Gateway (Python, /gateway)
@@ -36,10 +36,12 @@ src/app/api/             /api/* handlers for local dev / Node hosting
 src/lib/api-core.ts      Shared API logic (used by BOTH Next routes & CF Functions)
 src/lib/demo-catalog.ts  Built-in demo catalog
 src/components/flux/     UI: hero, search, player, queue, lyrics, docs, settings
-functions/api/[[path]].ts  Cloudflare Pages Function (production /api/*)
+worker/index.ts          Cloudflare Worker entry (production /api/* + assets)
+functions/api/[[path]].ts  Legacy Cloudflare Pages Function (same shared core)
 gateway/                 Python FastAPI gateway wrapping the Antra engine
-scripts/export-static.sh Builds the static export for Cloudflare Pages
-wrangler.toml            Cloudflare Pages config
+scripts/export-static.sh Builds the static export (out/) for Cloudflare
+scripts/gen_demo_assets.py  Regenerates demo media (needs numpy, Pillow, ffmpeg)
+wrangler.toml            Cloudflare Workers config (site + API Worker)
 README-DEPLOY.md         Step-by-step Cloudflare deployment guide
 ```
 
@@ -67,7 +69,7 @@ See [README-DEPLOY.md](README-DEPLOY.md). In short:
 
 ```bash
 bash scripts/export-static.sh
-npx wrangler pages deploy out
+npx wrangler deploy
 ```
 
 Then run the audio gateway somewhere Python lives and point the platform at
