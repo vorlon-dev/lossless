@@ -118,8 +118,7 @@ export function LyricsPanel({ onClose }: { onClose: () => void }) {
         )}
         {!loading && !lrc.length && !plain && (
           <p className="py-3 text-[12.5px] text-muted-foreground">
-            No lyrics available for this track. (Live mode: the gateway serves synced LRC when the
-            source provides it.)
+            No lyrics available for this track on the backend.
           </p>
         )}
       </div>

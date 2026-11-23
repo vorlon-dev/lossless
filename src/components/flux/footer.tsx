@@ -12,10 +12,10 @@ export function Footer() {
           <AudioWaveform size={18} className="text-emerald-300/70" aria-hidden />
           <div>
             <p className="text-[13px] font-medium">
-              Antra Flux — open lossless streaming built on the Antra engine
+              Antra Flux — open streaming platform wired to your own metadata backend
             </p>
             <p className="text-[11.5px] text-muted-foreground">
-              Stream only content you have the rights to. The platform hosts no copyrighted media.
+              Metadata via YouTube Music · playback via your configured resolver. Stream only content you have the rights to.
             </p>
           </div>
         </div>
