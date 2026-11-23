@@ -1,5 +1,7 @@
 "use client";
-// ─── Home view: hero, featured albums, artists, how-it-works ────────────────
+// ─── Home view: hero, live trending, new releases, top artists, pipeline ─────
+// Everything below the hero is powered by the live YTM metadata backend
+// through /api/catalog (trending songs, new releases, top artists).
 import { useCallback, useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import {
@@ -12,57 +14,59 @@ import {
   ShieldCheck,
   Disc3,
   Loader2,
+  Flame,
+  TrendingUp,
+  ListPlus,
+  Music2,
+  User,
 } from "lucide-react";
 import { Visualizer } from "./visualizer";
 import { QualityBadge, formatDuration } from "./quality-badge";
 import { useFlux } from "@/lib/store";
 import { fetchCatalog } from "@/lib/api-client";
-import type { Album } from "@/lib/types";
-
-const QUALITY_POINTS = [
-  { k: "FLAC / ALAC", v: "bit-perfect lossless codecs" },
-  { k: "24-bit · 192 kHz", v: "hi-res ceiling set by your sources" },
-  { k: "Gapless + Range", v: "HTTP Range seeking on every stream" },
-  { k: "CORS-open API", v: "usable from any app or player" },
-];
+import type { CatalogResponse } from "@/lib/types";
 
 const PIPELINE = [
   {
     icon: <Cloud size={18} className="text-cyan-300" />,
     title: "Cloudflare edge (free)",
-    body: "This site + the public /api endpoints run as Cloudflare Pages and Pages Functions — static assets at the edge, free tier friendly.",
+    body: "This site + the public /api endpoints run as one Cloudflare Worker with static assets — unlimited asset requests, free-tier friendly API calls.",
   },
   {
     icon: <Server size={18} className="text-emerald-300" />,
-    title: "Antra gateway",
-    body: "A small Python service (included in /gateway) wraps the open-source Antra engine: catalog search, metadata, stream resolution.",
+    title: "YTM metadata backend",
+    body: "Search, albums, artists, playlists, charts and lyrics come live from a YouTube Music InnerTube (WEB_REMIX) backend worker — always in sync with the catalog.",
   },
   {
     icon: <Radio size={18} className="text-fuchsia-300" />,
-    title: "Sources & streams",
-    body: "The gateway resolves lossless streams from the sources you configure (Tidal/Qobuz/Deezer mirrors via Antra's endpoint manifest).",
+    title: "Stream resolver",
+    body: "Playback is delegated to the resolver you configure via ANTRA_STREAM_TEMPLATE — /api/stream/{id} 302-redirects to it for every track.",
   },
 ];
 
 export function HomeView() {
   const playTracks = useFlux((s) => s.playTracks);
+  const addToQueue = useFlux((s) => s.addToQueue);
   const setView = useFlux((s) => s.setView);
   const setOpenAlbumId = useFlux((s) => s.setOpenAlbumId);
   const isPlaying = useFlux((s) => s.isPlaying);
-  const [albums, setAlbums] = useState<Album[] | null>(null);
+  const [catalog, setCatalog] = useState<CatalogResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(() => {
     const ctrl = new AbortController();
     fetchCatalog(ctrl.signal)
-      .then((d) => setAlbums(d.albums))
+      .then((d) => {
+        setCatalog(d);
+        setError(null);
+      })
       .catch((e) => setError(e.message));
     return () => ctrl.abort();
   }, []);
 
   useEffect(() => load(), [load]);
 
-  const playAlbum = (a: Album) => playTracks(a.tracks, 0);
+  const playTrending = (index: number) => catalog && playTracks(catalog.trending, index);
 
   return (
     <div className="flex flex-col">
@@ -77,19 +81,19 @@ export function HomeView() {
             className="max-w-2xl"
           >
             <p className="mono-label mb-4 inline-flex items-center gap-2 rounded-full border border-emerald-400/25 bg-emerald-400/8 px-3 py-1 text-emerald-300">
-              <Disc3 size={13} className="animate-[spin_3.2s_linear_infinite]" />
-              powered by the open Antra engine
+              <Flame size={13} className="animate-[pulse_2.4s_ease-in-out_infinite]" />
+              live · YouTube Music metadata backend
             </p>
             <h1 className="text-4xl font-semibold leading-[1.08] tracking-tight sm:text-5xl">
-              Hi-res lossless streaming,{" "}
+              Real music, real metadata,{" "}
               <span className="text-glow bg-gradient-to-r from-emerald-300 via-cyan-300 to-fuchsia-300 bg-clip-text text-transparent">
                 engineered for the open web.
               </span>
             </h1>
             <p className="mt-5 text-[15px] leading-relaxed text-muted-foreground sm:text-base">
-              Search the catalog, stream bit-perfect FLAC/ALAC in the browser, and expose a
-              CORS-open REST API that any music app can plug into — all deployable on Cloudflare&rsquo;s
-              free tier with your own self-hosted Antra gateway.
+              Search the full YouTube Music catalog, browse trending tracks and new releases,
+              read lyrics — and expose a CORS-open REST API that any music app can plug into.
+              All deployable on Cloudflare&rsquo;s free tier with your own backend.
             </p>
             <div className="mt-7 flex flex-wrap items-center gap-3">
               <button
@@ -121,38 +125,123 @@ export function HomeView() {
               className="h-[74px] w-full"
             />
             <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
-              {QUALITY_POINTS.map((q) => (
-                <div key={q.k} className="glass rounded-xl px-4 py-3">
-                  <p className="font-mono text-[12.5px] font-semibold text-emerald-300">{q.k}</p>
-                  <p className="mt-0.5 text-[11.5px] leading-snug text-muted-foreground">{q.v}</p>
-                </div>
-              ))}
+              <div className="glass rounded-xl px-4 py-3">
+                <p className="font-mono text-[12.5px] font-semibold text-emerald-300">
+                  {catalog ? `${catalog.trending.length} trending` : "…"}
+                </p>
+                <p className="mt-0.5 text-[11.5px] leading-snug text-muted-foreground">live charts right now</p>
+              </div>
+              <div className="glass rounded-xl px-4 py-3">
+                <p className="font-mono text-[12.5px] font-semibold text-cyan-300">
+                  {catalog ? `${catalog.newReleases.length} new` : "…"}
+                </p>
+                <p className="mt-0.5 text-[11.5px] leading-snug text-muted-foreground">fresh album releases</p>
+              </div>
+              <div className="glass rounded-xl px-4 py-3">
+                <p className="font-mono text-[12.5px] font-semibold text-fuchsia-300">
+                  {catalog ? `${catalog.topArtists.length} artists` : "…"}
+                </p>
+                <p className="mt-0.5 text-[11.5px] leading-snug text-muted-foreground">top charts this week</p>
+              </div>
+              <div className="glass rounded-xl px-4 py-3">
+                <p className="font-mono text-[12.5px] font-semibold text-emerald-300">CORS-open</p>
+                <p className="mt-0.5 text-[11.5px] leading-snug text-muted-foreground">API usable from any app</p>
+              </div>
             </div>
           </motion.div>
         </div>
       </section>
 
-      {/* ── featured albums ──────────────────────────────────────────────── */}
-      <section className="mx-auto w-full max-w-6xl px-4 py-10 sm:px-6" aria-label="Featured albums">
-        <div className="mb-5 flex items-center justify-between">
-          <h2 className="text-lg font-semibold tracking-tight">Featured albums</h2>
-          {albums && (
-            <span className="mono-label text-muted-foreground">{albums.length} in catalog</span>
-          )}
-        </div>
-        {error && (
+      {error && (
+        <section className="mx-auto w-full max-w-6xl px-4 pt-8 sm:px-6">
           <p className="rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-[13px] text-red-300">
-            Failed to load catalog: {error}
+            Failed to reach the metadata backend: {error}
           </p>
-        )}
-        {!albums && !error && (
+        </section>
+      )}
+
+      {!catalog && !error && (
+        <section className="mx-auto w-full max-w-6xl px-4 py-12 sm:px-6">
           <div className="flex items-center gap-2 text-[13px] text-muted-foreground">
-            <Loader2 size={15} className="animate-spin" /> Loading catalog…
+            <Loader2 size={15} className="animate-spin" /> Loading live catalog from your backend…
           </div>
-        )}
-        {albums && (
+        </section>
+      )}
+
+      {/* ── trending now ─────────────────────────────────────────────────── */}
+      {catalog && !!catalog.trending.length && (
+        <section className="mx-auto w-full max-w-6xl px-4 py-10 sm:px-6" aria-label="Trending now">
+          <div className="mb-5 flex items-center justify-between">
+            <h2 className="flex items-center gap-2 text-lg font-semibold tracking-tight">
+              <TrendingUp size={17} className="text-emerald-300" /> Trending now
+            </h2>
+            <button
+              onClick={() => playTrending(0)}
+              className="mono-label inline-flex items-center gap-1.5 rounded-full border border-emerald-400/30 bg-emerald-400/10 px-3 py-1 text-emerald-300 transition-colors hover:bg-emerald-400/20"
+            >
+              <Play size={11} /> play all
+            </button>
+          </div>
+          <div className="glass overflow-hidden rounded-2xl">
+            <ul className="divide-y divide-white/5">
+              {catalog.trending.slice(0, 10).map((t, i) => (
+                <li
+                  key={t.id}
+                  className="group flex items-center gap-3 px-3 py-2.5 transition-colors hover:bg-white/4 sm:px-4"
+                >
+                  <button
+                    onClick={() => playTrending(i)}
+                    className="relative h-11 w-11 shrink-0 overflow-hidden rounded-lg focus-visible:outline-2 focus-visible:outline-ring"
+                    aria-label={`Play ${t.title}`}
+                  >
+                    {t.artworkUrl ? (
+                      <img src={t.artworkUrl} alt="" className="h-full w-full object-cover" loading="lazy" />
+                    ) : (
+                      <span className="flex h-full w-full items-center justify-center bg-white/8">
+                        <Music2 size={16} className="text-muted-foreground" />
+                      </span>
+                    )}
+                    <span className="absolute inset-0 flex items-center justify-center bg-black/55 opacity-0 transition-opacity group-hover:opacity-100">
+                      <Play size={16} className="text-emerald-300" />
+                    </span>
+                  </button>
+                  <span className="w-5 text-right font-mono text-[11px] text-muted-foreground/70">{i + 1}</span>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-[13.5px] font-medium leading-tight">{t.title}</p>
+                    <p className="mt-0.5 truncate text-[11.5px] text-muted-foreground">
+                      {t.artists.join(", ")}
+                      {t.views ? ` · ${t.views}` : ""}
+                    </p>
+                  </div>
+                  <QualityBadge track={t} className="hidden sm:inline-flex" />
+                  <span className="hidden w-11 text-right font-mono text-[11px] text-muted-foreground sm:block">
+                    {formatDuration(t.durationMs)}
+                  </span>
+                  <button
+                    onClick={() => addToQueue(t)}
+                    className="rounded-lg p-2 text-muted-foreground opacity-0 transition-all hover:bg-white/10 hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100"
+                    aria-label={`Add ${t.title} to queue`}
+                  >
+                    <ListPlus size={16} />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </section>
+      )}
+
+      {/* ── new releases ─────────────────────────────────────────────────── */}
+      {catalog && !!catalog.newReleases.length && (
+        <section className="mx-auto w-full max-w-6xl px-4 pb-10 sm:px-6" aria-label="New releases">
+          <div className="mb-5 flex items-center justify-between">
+            <h2 className="flex items-center gap-2 text-lg font-semibold tracking-tight">
+              <Disc3 size={17} className="text-cyan-300" /> New releases
+            </h2>
+            <span className="mono-label text-muted-foreground">{catalog.newReleases.length} albums</span>
+          </div>
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
-            {albums.map((a) => (
+            {catalog.newReleases.slice(0, 10).map((a) => (
               <motion.article
                 key={a.id}
                 whileHover={{ y: -4 }}
@@ -163,35 +252,62 @@ export function HomeView() {
                   onClick={() => setOpenAlbumId(a.id)}
                   aria-label={`Open album ${a.title}`}
                 >
-                  { }
-                  <img
-                    src={a.artworkUrl}
-                    alt={`${a.title} cover art`}
-                    className="aspect-square w-full object-cover transition-transform duration-300 group-hover:scale-[1.04]"
-                    loading="lazy"
-                  />
+                  {a.artworkUrl ? (
+                    <img
+                      src={a.artworkUrl}
+                      alt={`${a.title} cover art`}
+                      className="aspect-square w-full object-cover transition-transform duration-300 group-hover:scale-[1.04]"
+                      loading="lazy"
+                    />
+                  ) : (
+                    <span className="flex aspect-square w-full items-center justify-center bg-white/8">
+                      <Disc3 size={22} className="text-muted-foreground" />
+                    </span>
+                  )}
                   <div className="p-3">
                     <p className="truncate text-[13.5px] font-medium">{a.title}</p>
                     <p className="mt-0.5 truncate text-[12px] text-muted-foreground">
-                      {a.artists.join(", ")} · {a.year}
+                      {a.artists.join(", ") || "Album"}
+                      {a.year ? ` · ${a.year}` : ""}
                     </p>
                   </div>
-                </button>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    playAlbum(a);
-                  }}
-                  className="absolute right-2.5 top-2.5 inline-flex h-10 w-10 items-center justify-center rounded-full bg-emerald-400 text-emerald-950 shadow-[0_0_24px_oklch(0.8_0.155_165/0.5)] transition-all hover:bg-emerald-300 md:translate-y-1 md:opacity-0 md:group-hover:translate-y-0 md:group-hover:opacity-100"
-                  aria-label={`Play album ${a.title}`}
-                >
-                  <Play size={16} className="ml-0.5" />
                 </button>
               </motion.article>
             ))}
           </div>
-        )}
-      </section>
+        </section>
+      )}
+
+      {/* ── top artists ──────────────────────────────────────────────────── */}
+      {catalog && !!catalog.topArtists.length && (
+        <section className="mx-auto w-full max-w-6xl px-4 pb-10 sm:px-6" aria-label="Top artists">
+          <h2 className="mb-5 flex items-center gap-2 text-lg font-semibold tracking-tight">
+            <User size={17} className="text-fuchsia-300" /> Top artists
+          </h2>
+          <div className="flex flex-wrap gap-3">
+            {catalog.topArtists.slice(0, 12).map((a) => (
+              <button
+                key={a.id || a.name}
+                onClick={() => setView("search")}
+                className="group flex items-center gap-3 rounded-2xl border border-white/8 bg-white/3 py-2 pl-2 pr-4 transition-colors hover:border-emerald-400/30 hover:bg-emerald-400/5"
+                title={`Search ${a.name}`}
+              >
+                {a.artworkUrl ? (
+                  <img src={a.artworkUrl} alt="" className="h-10 w-10 rounded-full object-cover" loading="lazy" />
+                ) : (
+                  <span className="flex h-10 w-10 items-center justify-center rounded-full bg-white/8">
+                    <User size={16} className="text-muted-foreground" />
+                  </span>
+                )}
+                <span className="text-left">
+                  <span className="block text-[13px] font-medium">{a.name}</span>
+                  <span className="block text-[11px] text-muted-foreground">tap to search</span>
+                </span>
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
 
       {/* ── pipeline / how it works ──────────────────────────────────────── */}
       <section className="mx-auto w-full max-w-6xl px-4 pb-12 sm:px-6" aria-label="Architecture">
@@ -222,10 +338,9 @@ export function HomeView() {
         <div className="mt-4 flex items-start gap-2.5 rounded-xl border border-white/8 bg-white/3 px-4 py-3">
           <ShieldCheck size={16} className="mt-0.5 shrink-0 text-emerald-300" />
           <p className="text-[12px] leading-relaxed text-muted-foreground">
-            <span className="font-medium text-foreground">Rights notice:</span> this platform
-            streams only what your own gateway and configured sources serve. You are responsible
-            for holding the rights to anything you stream through it. The demo catalog is original,
-            synthesized audio generated for this project.
+            <span className="font-medium text-foreground">Rights notice:</span> metadata and
+            streams come from the backend and resolver you configure. You are responsible for
+            holding the rights to anything you serve through this platform.
           </p>
         </div>
       </section>
