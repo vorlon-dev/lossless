@@ -47,6 +47,8 @@ export function PlayerBar() {
   const removeFromQueue = useFlux((s) => s.removeFromQueue);
   const clearQueue = useFlux((s) => s.clearQueue);
   const clientGateway = useFlux((s) => s.clientGateway);
+  const streamError = useFlux((s) => s.streamError);
+  const setStreamError = useFlux((s) => s.setStreamError);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [showLyrics, setShowLyrics] = useState(false);
@@ -75,19 +77,32 @@ export function PlayerBar() {
         st.next();
       }
     };
-    const onPlay = () => useFlux.setState({ isPlaying: true });
+    const onPlay = () => useFlux.setState({ isPlaying: true, streamError: null });
     const onPause = () => useFlux.setState({ isPlaying: false });
+    const onError = () => {
+      // playback failed — usually because no stream resolver is configured
+      const st = useFlux.getState();
+      const cur = st.queue[st.currentIndex];
+      if (cur && a.src && a.error) {
+        useFlux.setState({
+          isPlaying: false,
+          streamError: "No stream source available for this track — configure ANTRA_STREAM_TEMPLATE to enable playback.",
+        });
+      }
+    };
     a.addEventListener("timeupdate", onTime);
     a.addEventListener("durationchange", onTime);
     a.addEventListener("ended", onEnded);
     a.addEventListener("play", onPlay);
     a.addEventListener("pause", onPause);
+    a.addEventListener("error", onError);
     return () => {
       a.removeEventListener("timeupdate", onTime);
       a.removeEventListener("durationchange", onTime);
       a.removeEventListener("ended", onEnded);
       a.removeEventListener("play", onPlay);
       a.removeEventListener("pause", onPause);
+      a.removeEventListener("error", onError);
     };
   }, [reportTime]);
 
@@ -139,6 +154,21 @@ export function PlayerBar() {
         {/* hidden audio element — the whole app streams through this */}
         <audio id="flux-audio" ref={audioRef} preload="auto" className="hidden" />
 
+        {streamError && (
+          <div className="mx-auto flex max-w-6xl items-center gap-2 px-3 pt-2 sm:px-6">
+            <p className="flex-1 rounded-lg border border-amber-400/30 bg-amber-400/10 px-3 py-1.5 text-[11.5px] text-amber-200">
+              {streamError}
+            </p>
+            <button
+              onClick={() => setStreamError(null)}
+              className="rounded-md p-1 text-amber-200/70 hover:text-amber-100"
+              aria-label="Dismiss stream error"
+            >
+              <X size={13} />
+            </button>
+          </div>
+        )}
+
         <div className="mx-auto flex max-w-6xl flex-col gap-1 px-3 py-2.5 sm:px-6">
           {/* seek row */}
           <div className="flex items-center gap-3">
@@ -154,7 +184,7 @@ export function PlayerBar() {
               onValueCommit={onScrubCommit}
               disabled={!hasQueue}
               aria-label="Seek"
-              className="[&_[role=slider]]:h-3 [&_[role=slider]]:w-3 [&_[role=slider]]:border-emerald-300 [&_[role=slider]]:bg-emerald-300 [&>.relative>div:first-child]:h-1 [&>.relative>div:first-child>div]:bg-gradient-to-r [&>.relative>div:first-child>div]:from-emerald-400 [&>.relative>div:first-child>div]:to-cyan-400"
+              className="[&_][role=slider]]:h-3 [&_][role=slider]]:w-3 [&_][role=slider]]:border-emerald-300 [&_][role=slider]]:bg-emerald-300 [&>.relative>div:first-child]:h-1 [&>.relative>div:first-child>div]:bg-gradient-to-r [&>.relative>div:first-child>div]:from-emerald-400 [&>.relative>div:first-child>div]:to-cyan-400"
             />
             <span className="w-10 font-mono text-[10.5px] text-muted-foreground">
               {formatSeconds(dispDuration)}
@@ -166,7 +196,6 @@ export function PlayerBar() {
             {/* artwork + meta */}
             <div className="flex min-w-0 flex-1 items-center gap-3 sm:w-64 sm:flex-none lg:w-80">
               {track?.artworkUrl ? (
-                 
                 <img
                   src={track.artworkUrl}
                   alt=""
@@ -267,7 +296,7 @@ export function PlayerBar() {
                   step={0.02}
                   onValueChange={(v) => setVolume(v[0] ?? 0.85)}
                   aria-label="Volume"
-                  className="w-20 [&_[role=slider]]:h-2.5 [&_[role=slider]]:w-2.5 [&_[role=slider]]:border-emerald-300 [&_[role=slider]]:bg-emerald-300 [&>.relative>div:first-child]:h-1 [&>.relative>div:first-child>div]:bg-emerald-300"
+                  className="w-20 [&_][role=slider]]:h-2.5 [&_][role=slider]]:w-2.5 [&_][role=slider]]:border-emerald-300 [&_][role=slider]]:bg-emerald-300 [&>.relative>div:first-child]:h-1 [&>.relative>div:first-child>div]:bg-emerald-300"
                 />
               </div>
 
@@ -317,7 +346,6 @@ export function PlayerBar() {
                           className="flex min-w-0 flex-1 items-center gap-2.5 text-left focus-visible:outline-2 focus-visible:outline-ring"
                         >
                           {t.artworkUrl ? (
-                             
                             <img src={t.artworkUrl} alt="" className="h-9 w-9 rounded-md object-cover" />
                           ) : (
                             <span className="h-9 w-9 rounded-md bg-white/8" />
