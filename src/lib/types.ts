@@ -1,12 +1,11 @@
 // ─── Antra Flux — shared type definitions ────────────────────────────────────
 // These types define the public streaming API contract. Any music app can
-// consume the same JSON shapes from the /api/* endpoints. Metadata is sourced
-// from a YouTube Music backend; playback goes through /api/stream/{id}.
+// consume the same JSON shapes from the /api/* endpoints.
 
 export interface TrackFormat {
   codec: string;            // "AAC" (YTM source) | "FLAC" | "ALAC" | "MP3" …
-  bitDepth?: number;        // not exposed by YTM backend
-  sampleRateHz?: number;    // not exposed by YTM backend
+  bitDepth?: number;        // not exposed by the YTM backend
+  sampleRateHz?: number;    // not exposed by the YTM backend
   bitrateKbps?: number;     // 256 for AAC YTM streams
   lossless: boolean;
 }
@@ -32,15 +31,17 @@ export interface Track {
   explicit?: boolean;
   format: TrackFormat;
   qualityLabel: string;     // e.g. "AAC 256"
-  hiRes: boolean;
+  hiRes: boolean;           // false for YTM AAC source
   streamUrl: string;        // relative "/api/stream/:id" or absolute URL
   source?: string;          // "youtube-music" | "tidal" | "qobuz" | …
   sourceUrl?: string;       // original service link if known
   lyrics?: Lyrics;
+  views?: string;           // "1B views" (backend-provided popularity hint)
+  playlistId?: string;      // queue/radio playlist context when known
 }
 
 export interface Album {
-  id: string;               // MPREb_… browse id (or playlist id for playlists)
+  id: string;               // MPREb_… browse id (or VL…/PL… for playlists)
   title: string;
   artists: string[];
   year?: number;
@@ -89,7 +90,7 @@ export interface StatusResponse {
   mode: ApiMode;
   gatewayUrl?: string;
   gatewayOnline: boolean;
-  engine: string;           // "YTM metadata backend (Cloudflare Worker)"
+  engine: string;           // "YTM backend (WEB_REMIX InnerTube proxy)"
   formats: string[];
   maxQuality: string;
   endpoints: { method: string; path: string; description: string }[];

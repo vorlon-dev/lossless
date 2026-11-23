@@ -1,25 +1,21 @@
 // ─── Antra Flux — YouTube Music backend normalizers (shared) ─────────────────
-// Pure mapping functions that turn responses from the YTM metadata backend
-// (https://github.com/…/ytm-backend, served e.g. at
-// https://ytm-backend.vorlon-revora.workers.dev) into Antra Flux catalog types.
-// Used by BOTH sides:
-//   • src/lib/api-core.ts    — server-side proxy (/api/* on Workers & Next dev)
-//   • src/lib/api-client.ts  — browser "direct gateway" mode (Settings override)
+// Pure mapping functions that turn responses from the user's YTM backend
+// (https://ytm-backend.vorlon-revora.workers.dev — InnerTube WEB_REMIX proxy)
+// into the Antra Flux catalog types used across the UI and the public API.
 
 import type { Album, Artist, Track } from "./types";
 
-/** Default metadata backend — override with ANTRA_GATEWAY_URL. */
-export const DEFAULT_GATEWAY =
-  "https://ytm-backend.vorlon-revora.workers.dev";
+/** Base URL of the metadata backend. Override with ANTRA_GATEWAY_URL. */
+export const DEFAULT_GATEWAY = "https://ytm-backend.vorlon-revora.workers.dev";
 
-// ── raw backend shapes (as observed from the live backend) ───────────────────
+// ── raw backend shapes (as observed on the live deployment) ──────────────────
 export interface YtmArtistRef {
   name: string;
   id?: string;
 }
 
 export interface YtmItem {
-  type?: string; // song | video | album | artist | playlist | single
+  type?: string; // song | video | album | artist | playlist | episode
   videoId?: string;
   id?: string;
   browseId?: string;
@@ -56,10 +52,9 @@ export function bestThumb(item: YtmItem): string | undefined {
 
 function artistNames(item: YtmItem): string[] {
   const list = item.artists ?? [];
-  const names = list.map((a) => a?.name).filter((n): n is string => !!n && n.trim().length > 0);
-  // some artist rows put stats in artists[0].name ("249M monthly audience") — keep as-is,
-  // it is what the backend exposes and still renders sensibly.
-  return names;
+  return list
+    .map((a) => a?.name)
+    .filter((n): n is string => !!n && n.trim().length > 0);
 }
 
 /** YTM web streams AAC up to 256 kbps — the metadata backend does not expose
@@ -74,12 +69,11 @@ const YTM_FORMAT = {
 export function ytmTrack(item: YtmItem, i = 0): Track {
   const id = String(item.videoId ?? item.id ?? `yt-${i}`);
   const durationMs = item.durationSeconds ? item.durationSeconds * 1000 : 0;
-  const albumName = item.album?.name ?? "";
   return {
     id,
     title: item.title ?? item.name ?? "Unknown title",
     artists: artistNames(item),
-    album: albumName,
+    album: item.album?.name ?? "",
     albumId: item.album?.id,
     durationMs,
     releaseYear: item.year != null ? Number(item.year) : undefined,
@@ -93,20 +87,17 @@ export function ytmTrack(item: YtmItem, i = 0): Track {
   };
 }
 
-/** album row → Flux Album (without tracklist; use ytmAlbumDetail for that) */
+/** album row → Flux Album */
 export function ytmAlbum(item: YtmItem): Album {
   const id = String(item.id ?? item.browseId ?? item.playlistId ?? "");
-  const tracks = Array.isArray((item as Record<string, unknown>).tracks)
-    ? ((item as Record<string, unknown>).tracks as YtmItem[]).map((t) => ytmTrack(t))
-    : [];
   return {
     id,
     title: item.title ?? item.name ?? "Unknown album",
     artists: artistNames(item),
     year: item.year != null ? Number(item.year) : undefined,
     artworkUrl: bestThumb(item),
-    trackCount: tracks.length || item.trackCount || 0,
-    tracks,
+    trackCount: item.trackCount ?? 0,
+    tracks: [],
   };
 }
 
@@ -134,7 +125,7 @@ export function ytmPlaylistCard(item: YtmItem): Album {
   };
 }
 
-// ── payload-level normalizers ────────────────────────────────────────────────────
+// ── payload-level normalizers ────────────────────────────────────────────────
 
 const asItems = (payload: unknown): YtmItem[] => {
   const data = (payload as YtmEnvelope)?.data ?? (payload as Record<string, unknown>);
@@ -154,7 +145,7 @@ const splitByType = (items: YtmItem[]) => {
   for (const it of items) {
     const t = (it.type ?? "").toLowerCase();
     if (t === "song" || t === "video") tracks.push(ytmTrack(it));
-    else if (t === "album" || t === "single") albums.push(ytmAlbum(it));
+    else if (t === "album") albums.push(ytmAlbum(it));
     else if (t === "artist") artists.push(ytmArtist(it));
     else if (t === "playlist") playlists.push(ytmPlaylistCard(it));
   }
@@ -183,28 +174,35 @@ export function normalizeSearchAggregate(payload: unknown): NormalizedSearch {
 }
 
 /** Normalize /search/songs, /search/albums, /search/artists, /trending. */
-export function normalizeTypedSearch(payload: unknown, kind: "song" | "album" | "artist"): NormalizedSearch {
+export function normalizeTypedSearch(
+  payload: unknown,
+  kind: "song" | "album" | "artist"
+): NormalizedSearch {
   const items = asItems(payload);
   if (kind === "song") return { tracks: items.map((it) => ytmTrack(it)), albums: [], artists: [], playlists: [] };
   if (kind === "album") return { tracks: [], albums: items.map((it) => ytmAlbum(it)), artists: [], playlists: [] };
   return { tracks: [], albums: [], artists: items.map((it) => ytmArtist(it)), playlists: [] };
 }
 
-/** Normalize /album/:id into a full Flux Album with tracklist. */
-export function normalizeAlbumDetail(payload: unknown, fallbackId = ""): Album {
+/** Normalize /album/:id into a full Flux Album with tracklist.
+ *  Backend quirk: album track rows carry `artists: [{name: <track title>}]`
+ *  (bogus) — pass realArtist when known to repair the tracklist. */
+export function normalizeAlbumDetail(payload: unknown, fallbackId = "", realArtist?: string[]): Album {
   const data = ((payload as YtmEnvelope)?.data ?? payload) as Record<string, unknown>;
   const rawTracks = (data?.tracks as YtmItem[]) ?? [];
   const tracks = rawTracks.map((t) => {
     const track = ytmTrack(t);
-    // inherit album context onto each track row
-    track.album = track.album || (data?.title as string) || "";
-    track.albumId = track.albumId || (data?.id as string) || fallbackId;
+    track.album = (data?.title as string) ?? "";
+    track.albumId = (data?.id as string) ?? fallbackId;
+    // repair the backend's bogus track artists when we know the album artist
+    if (realArtist?.length && (!track.artists.length || track.artists.join(", ") === track.title)) {
+      track.artists = [...realArtist];
+    }
     return track;
   });
   const albumItem: YtmItem = {
     id: (data?.id as string) ?? fallbackId,
     title: (data?.title as string) ?? "Unknown album",
-    artists: (data?.artists as YtmArtistRef[]) ?? [],
     year: data?.year != null ? Number(data.year) : undefined,
     thumbnail: data?.thumbnail as string | undefined,
     thumbnails: data?.thumbnails as YtmItem["thumbnails"],
@@ -212,10 +210,6 @@ export function normalizeAlbumDetail(payload: unknown, fallbackId = ""): Album {
   const album = ytmAlbum(albumItem);
   album.trackCount = tracks.length;
   album.tracks = tracks;
-  // album rows from the backend lack artist names — inherit from the first track
-  if (!album.artists.length && tracks[0]?.artists?.length) {
-    album.artists = tracks[0].artists;
-  }
   return album;
 }
 
@@ -250,36 +244,31 @@ export function normalizeTrackDetail(payload: unknown, fallbackId = "") {
   };
 }
 
-/** Normalize /related/:id — the backend nests items inside sections[]. */
-export function normalizeRelated(payload: unknown): Track[] {
+/** Normalize /home → shelves of cards (playlists / albums / songs). */
+export function normalizeHomeShelves(payload: unknown) {
   const data = ((payload as YtmEnvelope)?.data ?? payload) as Record<string, unknown>;
-  const sections = (data?.sections as { items?: YtmItem[] }[]) ?? [];
-  const out: Track[] = [];
-  const seen = new Set<string>();
-  for (const s of sections) {
-    for (const it of s.items ?? []) {
+  const shelves = ((data?.shelves as { title?: string; items?: YtmItem[] }[]) ?? []).map((s) => ({
+    title: s.title ?? "",
+    items: (s.items ?? []).map((it) => {
       const t = (it.type ?? "").toLowerCase();
-      if (t !== "song" && t !== "video") continue;
-      const track = ytmTrack(it);
-      if (!seen.has(track.id)) {
-        seen.add(track.id);
-        out.push(track);
-      }
-    }
-  }
-  return out;
+      if (t === "song" || t === "video") return { kind: "song" as const, track: ytmTrack(it) };
+      if (t === "album") return { kind: "album" as const, album: ytmAlbum(it) };
+      if (t === "playlist") return { kind: "playlist" as const, playlist: ytmPlaylistCard(it) };
+      return { kind: "other" as const };
+    }),
+  }));
+  return shelves;
 }
 
 /** Flatten /new-releases carousels into a plain album list. */
 export function normalizeNewReleases(payload: unknown): Album[] {
   const data = ((payload as YtmEnvelope)?.data ?? payload) as Record<string, unknown>;
-  const carousels =
-    ((data?.carousels as { title?: string; items?: YtmItem[] }[]) ?? []) ?? [];
+  const carousels = ((data?.carousels as { title?: string; items?: YtmItem[] }[]) ?? []) ?? [];
   const albums: Album[] = [];
   for (const c of carousels) {
     for (const it of c.items ?? []) {
       const t = (it.type ?? "").toLowerCase();
-      if (t === "album" || t === "single") albums.push(ytmAlbum(it));
+      if (t === "album") albums.push(ytmAlbum(it));
     }
   }
   // dedupe by id
@@ -294,7 +283,7 @@ export function normalizeTrending(payload: unknown): Track[] {
     .map((it) => ytmTrack(it));
 }
 
-/** Extract the "Top artists" shelf from /charts (the only useful shelf there). */
+/** Extract the "Top artists" shelf from /charts. */
 export function normalizeChartArtists(payload: unknown): Artist[] {
   const data = ((payload as YtmEnvelope)?.data ?? payload) as Record<string, unknown>;
   const shelves = (data?.shelves as { title?: string; items?: YtmItem[] }[]) ?? [];
@@ -308,6 +297,34 @@ export function normalizeChartArtists(payload: unknown): Artist[] {
   return [];
 }
 
+/** Normalize /artist/:id into sections. */
+export function normalizeArtistPage(payload: unknown, fallbackId = "") {
+  const data = ((payload as YtmEnvelope)?.data ?? payload) as Record<string, unknown>;
+  const toTracks = (v: unknown) =>
+    (Array.isArray((v as { items?: YtmItem[] })?.items) ? (v as { items: YtmItem[] }).items : [])
+      .map((it) => ytmTrack(it));
+  const toAlbums = (v: unknown) =>
+    (Array.isArray((v as { items?: YtmItem[] })?.items) ? (v as { items: YtmItem[] }).items : [])
+      .map((it) => ytmAlbum(it));
+  return {
+    artist: {
+      id: (data?.id as string) ?? fallbackId,
+      name: (data?.name as string) ?? "Unknown artist",
+      artworkUrl: bestThumb(data as YtmItem),
+      description: (data?.description as string) ?? undefined,
+      listeners: (data?.listeners as string) ?? undefined,
+    } satisfies Artist & { description?: string; listeners?: string },
+    topTracks: toTracks(data?.topSongs),
+    albums: toAlbums(data?.albums),
+    singles: toAlbums(data?.singles),
+    videos: toTracks(data?.videos),
+    related: toAlbums(data?.related),
+    albumParams: ((data?.albums as { params?: string })?.params as string) ?? undefined,
+    singleParams: ((data?.singles as { params?: string })?.params as string) ?? undefined,
+    videoParams: ((data?.videos as { params?: string })?.params as string) ?? undefined,
+  };
+}
+
 /** Normalize /lyrics/:id. */
 export function normalizeLyrics(payload: unknown, trackId: string) {
   const data = ((payload as YtmEnvelope)?.data ?? payload) as Record<string, unknown>;
@@ -319,12 +336,10 @@ export function normalizeLyrics(payload: unknown, trackId: string) {
     plain: text,
     syncedLrc: (data?.lrc as string) ?? (data?.synced as string) ?? "",
     hasSynced: !!(data?.lrc || data?.synced),
-    source: (data?.footer as string) ?? undefined,
   };
 }
 
-/** Normalize /suggestions → string list. The backend returns data as a plain
- *  string array; be defensive and accept wrapped shapes too. */
+/** Normalize /suggestions → string list (data is a plain string array). */
 export function normalizeSuggestions(payload: unknown): string[] {
   const data = (payload as YtmEnvelope)?.data ?? payload;
   if (Array.isArray(data)) {
@@ -343,21 +358,22 @@ export function normalizeSuggestions(payload: unknown): string[] {
   return [];
 }
 
-/** Unwrap `{ items: [...] }` containers the backend uses on artist pages. */
-export function extractItems(v: unknown): YtmItem[] {
-  if (Array.isArray(v)) return v as YtmItem[];
-  if (v && typeof v === "object" && Array.isArray((v as Record<string, unknown>).items)) {
-    return (v as { items: YtmItem[] }).items;
+/** Normalize /related/:id → flatten sections into a track list. */
+export function normalizeRelated(payload: unknown): Track[] {
+  const data = ((payload as YtmEnvelope)?.data ?? payload) as Record<string, unknown>;
+  const sections = (data?.sections as { items?: YtmItem[] }[]) ?? [];
+  const out: Track[] = [];
+  const seen = new Set<string>();
+  for (const s of sections) {
+    for (const it of s.items ?? []) {
+      const t = (it.type ?? "").toLowerCase();
+      if (t !== "song" && t !== "video") continue;
+      const track = ytmTrack(it);
+      if (!seen.has(track.id)) {
+        seen.add(track.id);
+        out.push(track);
+      }
+    }
   }
-  return [];
-}
-
-/** Album track rows from the backend carry a bogus artists array
- *  (artist name = track title). Detect and repair using the album artist. */
-export function repairAlbumTrackArtists(album: Album) {
-  if (!album.artists.length) return;
-  for (const t of album.tracks) {
-    const bogus = !t.artists.length || t.artists.join(", ") === t.title;
-    if (bogus) t.artists = [...album.artists];
-  }
+  return out;
 }
