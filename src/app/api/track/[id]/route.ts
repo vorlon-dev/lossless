@@ -6,6 +6,7 @@ export async function GET(request: Request) {
   return handleApiRequest(request, {
     GATEWAY_URL: process.env.ANTRA_GATEWAY_URL,
     API_KEY: process.env.ANTRA_API_KEY,
+    STREAM_TEMPLATE: process.env.ANTRA_STREAM_TEMPLATE,
   });
 }
 
