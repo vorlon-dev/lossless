@@ -26,7 +26,7 @@ const KINDS: { id: Kind; label: string }[] = [
   { id: "artist", label: "Artists" },
 ];
 
-const SUGGESTIONS = ["Neon", "Deep Signal", "Kaelo", "Aurora", "Ilya Voss", "Ambient"];
+const SUGGESTIONS = ["Blinding Lights", "The Weeknd", "lofi hip hop", "Arijit Singh", "workout mix", "Daft Punk"];
 
 export function SearchView() {
   const [query, setQuery] = useState("");
@@ -51,13 +51,10 @@ export function SearchView() {
       const gw = clientGateway;
 
       if (kind === "all") {
-        Promise.all([
-          fetchSearch({ q: query, kind: "song", limit: 30, gateway: gw, signal: ctrl.signal }),
-          fetchSearch({ q: query, kind: "album", limit: 12, gateway: gw, signal: ctrl.signal }),
-          fetchSearch({ q: query, kind: "artist", limit: 8, gateway: gw, signal: ctrl.signal }),
-        ])
-          .then(([t2, a, ar]) => {
-            setResults({ tracks: t2.tracks, albums: a.albums, artists: ar.artists });
+        // one aggregate call — the backend returns songs, albums, artists & playlists together
+        fetchSearch({ q: query, kind: "all", limit: 30, gateway: gw, signal: ctrl.signal })
+          .then((r) => {
+            setResults(r);
             setError(null);
           })
           .catch((e: Error) => {
@@ -175,7 +172,6 @@ export function SearchView() {
                 className="group flex items-center gap-3 rounded-2xl border border-white/8 bg-white/3 py-2 pl-2 pr-4 transition-colors hover:border-emerald-400/30 hover:bg-emerald-400/5"
               >
                 {a.artworkUrl ? (
-                   
                   <img
                     src={a.artworkUrl}
                     alt=""
@@ -190,7 +186,9 @@ export function SearchView() {
                 <span className="text-left">
                   <span className="block text-[13px] font-medium">{a.name}</span>
                   <span className="block text-[11px] text-muted-foreground">
-                    {a.albumCount ?? 0} album{(a.albumCount ?? 0) === 1 ? "" : "s"}
+                    {a.albumCount != null
+                      ? `${a.albumCount} album${a.albumCount === 1 ? "" : "s"}`
+                      : "tap to search"}
                   </span>
                 </span>
               </button>
@@ -253,7 +251,6 @@ export function SearchView() {
                     aria-label={`Play ${t.title}`}
                   >
                     {t.artworkUrl ? (
-                       
                       <img src={t.artworkUrl} alt="" className="h-full w-full object-cover" loading="lazy" />
                     ) : (
                       <span className="flex h-full w-full items-center justify-center bg-white/8">
@@ -305,8 +302,8 @@ export function SearchView() {
           <p className="text-[14px] font-medium">No matches for “{query}”</p>
           <p className="max-w-sm text-[12.5px] text-muted-foreground">
             {clientGateway
-              ? "Your gateway returned no results. Check that its sources are configured and searchable."
-              : "This is the built-in demo catalog. Connect your Antra gateway in Settings to search your real library."}
+              ? "Your backend returned no results. Try a different query or check that it is healthy at /health."
+              : "The metadata backend returned no results. Try a different query."}
           </p>
         </div>
       )}

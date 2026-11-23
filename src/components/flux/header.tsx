@@ -45,9 +45,7 @@ function StatusChip({ status, gateway }: { status: StatusResponse | null; gatewa
       title={
         live
           ? `Live via ${status.gatewayUrl}`
-          : status.mode === "live"
-            ? "Gateway unreachable — requests fail over to demo catalog"
-            : "Serving built-in demo catalog — connect a gateway in Settings"
+          : "Metadata backend unreachable — showing cached / failing requests"
       }
     >
       <span
@@ -55,7 +53,7 @@ function StatusChip({ status, gateway }: { status: StatusResponse | null; gatewa
           live ? "bg-emerald-400 pulse-dot" : "bg-cyan-400"
         }`}
       />
-      {live ? "Live · Antra" : "Demo catalog"}
+      {live ? "Live · YTM" : "Backend offline"}
     </span>
   );
 }
@@ -94,7 +92,7 @@ export function Header() {
             <span className="text-[15px] font-semibold tracking-wide">
               ANTRA<span className="text-emerald-300"> FLUX</span>
             </span>
-            <span className="mono-label text-muted-foreground">lossless platform</span>
+            <span className="mono-label text-muted-foreground">streaming platform</span>
           </span>
         </button>
 
