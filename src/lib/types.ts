@@ -1,12 +1,13 @@
 // ─── Antra Flux — shared type definitions ────────────────────────────────────
 // These types define the public streaming API contract. Any music app can
-// consume the same JSON shapes from the /api/* endpoints.
+// consume the same JSON shapes from the /api/* endpoints. Metadata is sourced
+// from a YouTube Music backend; playback goes through /api/stream/{id}.
 
 export interface TrackFormat {
-  codec: string;            // "FLAC" | "ALAC" | "MP3" | "AAC"
-  bitDepth?: number;        // 16 | 24
-  sampleRateHz?: number;    // 44100 | 96000 | 192000
-  bitrateKbps?: number;     // lossy only
+  codec: string;            // "AAC" (YTM source) | "FLAC" | "ALAC" | "MP3" …
+  bitDepth?: number;        // not exposed by YTM backend
+  sampleRateHz?: number;    // not exposed by YTM backend
+  bitrateKbps?: number;     // 256 for AAC YTM streams
   lossless: boolean;
 }
 
@@ -16,7 +17,7 @@ export interface Lyrics {
 }
 
 export interface Track {
-  id: string;
+  id: string;               // YouTube video id
   title: string;
   artists: string[];
   album: string;
@@ -30,16 +31,16 @@ export interface Track {
   isrc?: string;
   explicit?: boolean;
   format: TrackFormat;
-  qualityLabel: string;     // e.g. "FLAC 24-bit/96kHz"
-  hiRes: boolean;           // bit depth >= 24 or sample rate > 48kHz
+  qualityLabel: string;     // e.g. "AAC 256"
+  hiRes: boolean;
   streamUrl: string;        // relative "/api/stream/:id" or absolute URL
-  source?: string;          // "demo" | "tidal" | "qobuz" | "deezer" | "apple" | ...
+  source?: string;          // "youtube-music" | "tidal" | "qobuz" | …
   sourceUrl?: string;       // original service link if known
   lyrics?: Lyrics;
 }
 
 export interface Album {
-  id: string;
+  id: string;               // MPREb_… browse id (or playlist id for playlists)
   title: string;
   artists: string[];
   year?: number;
@@ -50,7 +51,7 @@ export interface Album {
 }
 
 export interface Artist {
-  id: string;
+  id: string;               // UC… channel id
   name: string;
   artworkUrl?: string;
   albumCount?: number;
@@ -61,11 +62,22 @@ export interface SearchResults {
   tracks: Track[];
   albums: Album[];
   artists: Artist[];
+  playlists?: Album[];      // playlist cards (openable via /api/playlist/{id})
+}
+
+export interface CatalogResponse {
+  mode: ApiMode;
+  source: string;
+  backend: string;
+  trending: Track[];
+  newReleases: Album[];
+  topArtists: Artist[];
+  tookMs?: number;
 }
 
 export interface SearchResponse {
   query: string;
-  kind: "song" | "album" | "artist";
+  kind: "song" | "album" | "artist" | "all";
   mode: ApiMode;
   tookMs: number;
   results: SearchResults;
@@ -77,14 +89,14 @@ export interface StatusResponse {
   mode: ApiMode;
   gatewayUrl?: string;
   gatewayOnline: boolean;
-  engine: string;           // "Antra (Python) gateway" | "demo-catalog"
+  engine: string;           // "YTM metadata backend (Cloudflare Worker)"
   formats: string[];
   maxQuality: string;
   endpoints: { method: string; path: string; description: string }[];
   copyrightNotice: string;
 }
 
-export type ApiMode = "demo" | "live";
+export type ApiMode = "live";
 
 export interface ApiError {
   error: string;
