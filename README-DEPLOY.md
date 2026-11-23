@@ -3,21 +3,23 @@
 The project splits cleanly along Cloudflare's free-tier capabilities:
 
 ```
-Cloudflare Workers (free)                    Your machine / any Python host
+Cloudflare Workers (free)                    Your Cloudflare account
 ┌──────────────────────────────────┐         ┌─────────────────────────────┐
-│  out/    → static site (assets)  │         │  gateway/server.py          │
-│  worker/ → /api/* Worker         │ ──────► │  (wraps the Antra engine)   │
-│          unlimited asset reqs,   │         │  FLAC/ALAC streams          │
-│          100k API calls/day      │         │                             │
-└──────────────────────────────────┘         └─────────────────────────────┘
+│  out/    → static site (assets)  │         │  YTM metadata backend        │
+│  worker/ → /api/* Worker         │ ──────► │  (your own Worker project —  │
+│          unlimited asset reqs,   │         │   /search /album /song …)    │
+│          100k API calls/day      │         └─────────────────────────────┘
+└──────────────────────────────────┘
+                    │ ANTRA_STREAM_TEMPLATE (optional)
+                    ▼
+         your stream resolver (audio bytes for /api/stream/{id})
 ```
 
-Cloudflare's free tier runs JavaScript at the edge — it cannot run the
-Python Antra engine. So the **site + public API run as one Workers project**
-(static assets + a tiny API Worker), while audio sourcing runs in the small
-Python gateway (`/gateway`) that you host wherever Python runs. Until a
-gateway is connected, the whole site and every endpoint serve a built-in
-original demo catalog, so nothing is broken out of the box.
+Cloudflare's free tier runs the **site + public API as one Workers project**
+(static assets + a tiny API Worker). Metadata comes live from your YouTube
+Music backend worker; audio playback is delegated to whatever resolver you
+configure. No bundled media, no demo catalog — the site is data-driven from
+the first request.
 
 ---
 
@@ -25,14 +27,6 @@ original demo catalog, so nothing is broken out of the box.
 
 ```bash
 bash scripts/export-static.sh
-```
-
-The demo media (10 synthesized FLAC tracks + cover art) ships committed in
-`public/`. If you ever remove it, regenerate with one command:
-
-```bash
-pip install numpy pillow          # ffmpeg must also be on PATH
-python3 scripts/gen_demo_assets.py
 ```
 
 This parks the Next.js API route handlers, builds a fully static export into
@@ -61,10 +55,6 @@ First run opens a browser for `wrangler login` (or set `CLOUDFLARE_API_TOKEN`).
    → select the repo.
 3. In the build settings:
    - **Build command**: `bash scripts/export-static.sh`
-     (demo media is committed, so no generation step is needed. If you ever
-     remove `public/demo-audio` + `public/covers` from the repo, use
-     `pip install numpy pillow && python3 scripts/gen_demo_assets.py && bash scripts/export-static.sh`
-     instead — requires python3 + ffmpeg on the build image.)
    - **Deploy command**: `npx wrangler deploy` (the default — leave as is)
    - Root directory: repo root (leave default)
 4. Save & deploy. Every push to your main branch redeploys automatically;
@@ -81,63 +71,57 @@ Upload assets). Use A or B if you want the `/api` endpoints.
 > shared API core runs as a Pages Function. Workers (above) is the recommended,
 > current path.
 
-## 3) Environment variables (optional, site-wide)
+## 3) Environment variables (all optional, site-wide)
 
 Dashboard → your Worker → **Settings → Variables and Secrets**:
 
 | Variable | Meaning |
 | --- | --- |
-| `ANTRA_GATEWAY_URL` | Base URL of your self-hosted Antra gateway (e.g. `https://your-tunnel.trycloudflare.com`) — flips `/api/*` from demo to live |
+| `ANTRA_GATEWAY_URL` | Base URL of your YTM metadata backend. **Default: `https://ytm-backend.vorlon-revora.workers.dev`** — set it to point at a different backend |
 | `ANTRA_API_KEY` | Optional shared secret; clients must send `x-api-key: <key>` |
+| `ANTRA_STREAM_TEMPLATE` | Optional playback resolver, e.g. `https://your-resolver.example/stream/{id}`. `{id}` is replaced with the YouTube video id per request. Unset → `/api/stream/{id}` returns 502 with a clear message |
 
 (With wrangler: `npx wrangler secret put ANTRA_GATEWAY_URL`. Or uncomment
 them in `wrangler.toml` `[vars]` for non-secret values.)
 
-## 4) Run the audio gateway somewhere
+## 4) Enable playback (optional)
 
-Full guide in [`gateway/README.md`](gateway/README.md). Quickest paths:
+The API is metadata-only until you configure a resolver. Any HTTP audio
+source works — point `ANTRA_STREAM_TEMPLATE` at it and `/api/stream/{id}`
+will 302-redirect browsers and apps to the audio bytes with the track id
+filled in:
 
-**Your PC + a free Cloudflare Tunnel:**
-```bash
-cd gateway && pip install -r requirements.txt
-git clone https://github.com/anandprtp/Antra.git Antra
-pip install -r Antra/requirements-runtime.txt
-python server.py            # :8877
-cloudflared tunnel --url http://localhost:8877   # free HTTPS URL
+```toml
+# wrangler.toml [vars] (non-secret) or wrangler secret put
+[vars]
+ANTRA_STREAM_TEMPLATE = "https://your-resolver.example/stream/{id}"
 ```
 
-**Any Docker host / free Python host (HF Spaces, Render, Koyeb):** use
-`gateway/Dockerfile` as-is.
-
-Then either:
-- set `ANTRA_GATEWAY_URL` on the Worker (site-wide live mode), or
-- paste the URL in the site's **Settings** view (per-browser — handy for
-  testing and for sharing with friends without changing the deployment).
+Your YTM backend also exposes `/batch`, `/radio/{id}` and `/related/{id}` —
+this API mirrors them (`/api/radio/{id}`, `/api/related/{id}`) so apps can
+build queues without touching the backend directly.
 
 ## 5) Point your music apps at it
 
 See the **API** view on the site (or `GET /api/status`) for the live endpoint
 list and copy-paste examples for curl / Python / JS / generic players. The
-streaming endpoints are CORS-open and Range-aware — mpv, VLC, Feishin,
-Symfonium, custom apps, anything that plays HTTP audio.
+API is CORS-open; the stream redirect works with mpv, VLC, Feishin,
+Symfonium, custom apps — anything that follows redirects and plays HTTP audio.
 
 ```bash
-curl "https://antra-flux.<your-subdomain>.workers.dev/api/search?q=aurora&kind=song"
-curl -L "https://antra-flux.<your-subdomain>.workers.dev/api/stream/<id>" -o track.flac
+curl "https://antra-flux.<your-subdomain>.workers.dev/api/search?q=blinding%20lights&kind=song"
+curl "https://antra-flux.<your-subdomain>.workers.dev/api/track/4NRXx6U8ABQ"
+curl -L "https://antra-flux.<your-subdomain>.workers.dev/api/stream/4NRXx6U8ABQ" -o track.audio
 ```
 
 ---
 
 ## Costs (free tier)
 
-- **Workers assets**: unlimited static requests, free. Audio bytes streamed
-  via the 302 redirect are plain asset requests — not Worker invocations.
+- **Workers assets**: unlimited static requests, free. Audio bytes served via
+  the 302 redirect are plain asset requests — not Worker invocations.
 - **Worker**: only `/api/*` calls count — 100k requests/day free.
-- **Tunnel**: free.
-- **Gateway host**: your PC or a free tier of a Python host.
-
-A heavy private library can also keep stream URLs direct (302) from your
-gateway instead of proxying bytes through the Worker.
+- **Metadata backend**: your own worker (also free-tier sized, with caching).
 
 ## Troubleshooting
 
@@ -159,9 +143,15 @@ assets only. Use Option A or B so the `worker/` API ships too.
 **`wrangler pages deploy out` warning** — legacy command. This project is a
 Workers project now; use `npx wrangler deploy`.
 
+**`/api/track/…` returns 502 "backend responded …"** — your metadata backend
+is down or the URL is wrong. Check `ANTRA_GATEWAY_URL` and open
+`<backend>/health` directly.
+
+**Playback fails with "No stream source configured"** — that is the intended
+metadata-only behavior. Set `ANTRA_STREAM_TEMPLATE` (step 4) to enable audio.
+
 ## Legal note
 
-This platform hosts no copyrighted media. It streams only what your own
-gateway + configured sources resolve, and you are responsible for holding
-the rights to anything you serve. The bundled demo catalog is original,
-synthesized audio created for this project.
+This platform hosts no copyrighted media. Metadata is sourced from the backend
+you configure; audio playback is delegated to the resolver you configure, and
+you are responsible for holding the rights to anything you serve.
