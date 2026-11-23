@@ -49,7 +49,7 @@ export function SettingsView() {
   const test = useCallback(async () => {
     const target = input.trim() ? normalizeGateway(input) : null;
     if (!target) {
-      setTestResult({ ok: true, message: "No gateway URL set — the site serves its own demo catalog." });
+      setTestResult({ ok: true, message: "No backend URL set — using the site's default YTM metadata backend." });
       return;
     }
     setTesting(true);
@@ -88,9 +88,9 @@ export function SettingsView() {
         <p className="mono-label mb-2 text-emerald-300">configuration</p>
         <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Settings</h1>
         <p className="mt-2.5 max-w-2xl text-[13.5px] leading-relaxed text-muted-foreground">
-          By default this site serves its built-in demo catalog through its own /api endpoints.
-          Connect a self-hosted Antra gateway to browse and stream your real lossless library —
-          the connection is stored in this browser only.
+          This site talks to a YouTube Music metadata backend through its own /api endpoints.
+          Connect a different backend to browse its catalog instead — the connection is stored in
+          this browser only.
         </p>
       </div>
 
@@ -100,21 +100,21 @@ export function SettingsView() {
             <span className="inline-flex rounded-lg border border-white/10 bg-white/5 p-2">
               <Plug size={16} className="text-emerald-300" />
             </span>
-            Antra gateway URL
+            Metadata backend URL
           </h2>
           <p className="mb-4 text-[12px] leading-relaxed text-muted-foreground">
-            e.g. <code className="font-mono text-emerald-200/80">https://your-gateway.trycloudflare.com</code> or{" "}
-            <code className="font-mono text-emerald-200/80">http://192.168.1.20:8877</code> (LAN).
-            The gateway must send CORS headers — the included Python gateway does.
+            e.g. <code className="font-mono text-emerald-200/80">https://ytm-backend.vorlon-revora.workers.dev</code>.{" "}
+            The backend must expose <code className="font-mono">/health</code>,{" "}
+            <code className="font-mono">/search</code>, <code className="font-mono">/album</code> etc. with CORS enabled.
           </p>
           <div className="flex flex-col gap-2.5 sm:flex-row">
             <input
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && test()}
-              placeholder="https://your-antra-gateway.example"
+              placeholder="https://your-ytm-backend.example"
               className="h-11 flex-1 rounded-xl border border-white/12 bg-white/5 px-4 font-mono text-[13px] placeholder:text-muted-foreground/60 focus:border-emerald-400/50 focus:outline-none focus:ring-2 focus:ring-emerald-400/25"
-              aria-label="Gateway base URL"
+              aria-label="Backend base URL"
             />
             <div className="flex gap-2">
               <button
@@ -167,8 +167,8 @@ export function SettingsView() {
             This deployment&rsquo;s /api/status
           </h2>
           <p className="mb-3 text-[12px] text-muted-foreground">
-            Server-side configuration of this site (env vars on Cloudflare): ANTRA_GATEWAY_URL and
-            optional ANTRA_API_KEY.
+            Server-side configuration of this site (env vars on Cloudflare): ANTRA_GATEWAY_URL,
+            optional ANTRA_API_KEY and optional ANTRA_STREAM_TEMPLATE.
           </p>
           <div className="relative">
             <pre className="max-w-full overflow-x-auto rounded-xl border border-white/10 bg-black/45 p-4 font-mono text-[11.5px] leading-relaxed text-emerald-200/85">
@@ -187,23 +187,23 @@ export function SettingsView() {
 
         <section className="min-w-0 rounded-2xl border border-white/8 bg-white/3 p-5 text-[12px] leading-relaxed text-muted-foreground sm:p-6">
           <h2 className="mb-2 text-[13.5px] font-semibold text-foreground">
-            Running your own gateway
+            Running your own backend
           </h2>
           <ol className="list-decimal space-y-1.5 pl-5">
             <li>
-              Grab the <code className="font-mono text-emerald-200/80">/gateway</code> folder from
-              this project — a small FastAPI service that wraps the open Antra engine.
-            </li>
-            <li>
-              Run it on any always-on machine: your PC (<code className="font-mono">python server.py</code>),
-              a VPS, or a free Python host. For LAN-only use, expose it via{" "}
-              <code className="font-mono">cloudflared tunnel</code> to get a free HTTPS URL — no
-              port-forwarding.
+              Deploy your YTM metadata worker (search / albums / artists / lyrics endpoints with
+              CORS) — any Cloudflare Workers project with a <code className="font-mono">/health</code> route works.
             </li>
             <li>
               Paste its URL above, or make it the site-wide default by setting{" "}
               <code className="font-mono text-emerald-200/80">ANTRA_GATEWAY_URL</code> in your
-              Cloudflare Pages environment variables.
+              Cloudflare Worker environment variables (wrangler secret or dashboard).
+            </li>
+            <li>
+              To enable playback, set{" "}
+              <code className="font-mono text-emerald-200/80">ANTRA_STREAM_TEMPLATE</code> to a resolver
+              URL containing <code className="font-mono">{"{id}"}</code> — /api/stream/&lt;id&gt; will redirect
+              there for every track.
             </li>
           </ol>
         </section>
