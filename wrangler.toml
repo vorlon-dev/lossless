@@ -23,7 +23,8 @@ run_worker_first = ["/api", "/api/*"]
 # Non-secret vars (override in dashboard → your Worker → Settings → Variables
 # and Secrets; secrets: `npx wrangler secret put ANTRA_GATEWAY_URL`)
 [vars]
-# Site-wide audio gateway. Leave unset to serve the built-in demo catalog;
-# visitors can also connect their own gateway per-browser in Settings.
-# ANTRA_GATEWAY_URL = "https://your-gateway.example.com"
+# Metadata backend (defaults to the built-in YTM worker if unset):
+# ANTRA_GATEWAY_URL = "https://ytm-backend.vorlon-revora.workers.dev"
+# Playback resolver — set to enable /api/stream/{id} (302 redirect, {id} = video id):
+# ANTRA_STREAM_TEMPLATE = "https://your-resolver.example/stream/{id}"
 # ANTRA_API_KEY = ""

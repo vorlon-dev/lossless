@@ -2,42 +2,48 @@
 // Pure Web-standard Request/Response handling shared by:
 //   • Next.js route handlers (src/app/api/*) for local dev & preview
 //   • Cloudflare Pages Functions (functions/api/*) for free production hosting
-// Talks to a self-hosted Antra gateway (Python) when GATEWAY_URL is set,
-// otherwise serves the built-in demo catalog so everything works standalone.
+//   • Cloudflare Workers entry (worker/index.ts)
+//
+// All metadata is served LIVE from the user's YouTube Music backend
+// (ANTRA_GATEWAY_URL, default: https://ytm-backend.vorlon-revora.workers.dev).
+// There is no demo catalog. Playback is delegated to an optional stream
+// resolver template (ANTRA_STREAM_TEMPLATE) — /api/stream/{id} 302-redirects
+// to it with {id} replaced by the video id.
 
 import {
-  DEMO_ALBUMS,
-  DEMO_ARTISTS,
-  DEMO_TRACKS,
-  demoAlbumById,
-  demoFileFor,
-  demoSearch,
-  demoTrackById,
-  DEMO_VERSION,
-} from "./demo-catalog";
-import type {
-  Album,
-  ApiMode,
-  Artist,
-  SearchResults,
-  StatusResponse,
-  Track,
-} from "./types";
+  DEFAULT_GATEWAY,
+  normalizeAlbumDetail,
+  normalizeArtistPage,
+  normalizeChartArtists,
+  normalizeLyrics,
+  normalizeNewReleases,
+  normalizePlaylistDetail,
+  normalizeRelated,
+  normalizeSearchAggregate,
+  normalizeSuggestions,
+  normalizeTrending,
+  normalizeTrackDetail,
+  normalizeTypedSearch,
+} from "./ytm";
+import type { ApiMode, StatusResponse } from "./types";
 
-export const VERSION = "1.0.0";
+export const VERSION = "1.1.0";
 
 export interface ApiEnv {
-  /** Base URL of your self-hosted Antra gateway, e.g. https://antra-gw.example.workers.dev */
+  /** Base URL of the YTM metadata backend */
   GATEWAY_URL?: string;
   /** Optional shared secret. When set, clients must send header "x-api-key" (or ?key=). */
   API_KEY?: string;
+  /** Optional stream resolver URL template, e.g. "https://resolver.example/stream/{id}".
+   *  "{id}" is replaced with the video id. When set, /api/stream/{id} 302-redirects there. */
+  STREAM_TEMPLATE?: string;
 }
 
 const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Range, X-Api-Key, Authorization",
-  "Access-Control-Expose-Headers": "Content-Range, Accept-Ranges, Content-Length, Content-Type",
+  "Access-Control-Expose-Headers": "Content-Range, Accept-Ranges, Content-Length, Content-Type, Location",
   "Access-Control-Max-Age": "86400",
 };
 
@@ -52,7 +58,7 @@ function err(message: string, status: number, detail?: string): Response {
   return json({ error: message, detail, status }, status);
 }
 
-// ── tiny TTL cache ───────────────────────────────────────────────────────────
+// ── tiny TTL cache (per isolate) ─────────────────────────────────────────────
 const cache = new Map<string, { at: number; data: unknown }>();
 function getCached<T>(key: string, ttlMs: number): T | undefined {
   const hit = cache.get(key);
@@ -65,9 +71,8 @@ function setCached(key: string, data: unknown) {
   cache.set(key, { at: Date.now(), data });
 }
 
-function gatewayUrl(env: ApiEnv): string | undefined {
-  const raw = (env.GATEWAY_URL ?? "").trim();
-  if (!raw) return undefined;
+function gatewayUrl(env: ApiEnv): string {
+  const raw = (env.GATEWAY_URL ?? "").trim() || DEFAULT_GATEWAY;
   return raw.replace(/\/+$/, "");
 }
 
@@ -79,7 +84,7 @@ function checkApiKey(request: Request, env: ApiEnv): boolean {
   return provided === key;
 }
 
-async function fetchUpstream(url: string, init?: RequestInit, timeoutMs = 12000): Promise<Response> {
+async function fetchUpstream(url: string, init?: RequestInit, timeoutMs = 15000): Promise<Response> {
   return fetch(url, {
     ...init,
     signal: AbortSignal.timeout(timeoutMs),
@@ -87,119 +92,16 @@ async function fetchUpstream(url: string, init?: RequestInit, timeoutMs = 12000)
   });
 }
 
-// ── upstream normalization ───────────────────────────────────────────────────
-// The Antra gateway returns the same shapes as this API; raw Antra CLI output
-// ({"type": "...", "data": ...}) is normalized defensively as well.
-interface RawSearchItem {
-  title?: string;
-  artists?: string[];
-  artist_string?: string;
-  album?: string;
-  duration_ms?: number;
-  artwork_url?: string;
-  stream_id?: string;
-  source?: string;
-  bit_depth?: number;
-  sample_rate_hz?: number;
-  audio_format?: string;
-  quality_kbps?: number;
-  is_lossless?: boolean;
-  is_explicit?: boolean;
-  track_number?: number;
-  release_year?: number;
-}
-
-function normalizeRawItem(item: RawSearchItem, i: number): Track {
-  const codec = (item.audio_format ?? "FLAC").toUpperCase();
-  const bitDepth = item.bit_depth;
-  const sampleRateHz = item.sample_rate_hz;
-  const lossless = item.is_lossless ?? ["FLAC", "ALAC"].includes(codec);
-  const id = item.stream_id ?? `raw-${i}`;
-  let label = codec;
-  if (lossless && bitDepth && sampleRateHz) label = `${codec} ${bitDepth}-bit/${Math.round(sampleRateHz / 1000)}kHz`;
-  else if (lossless && bitDepth) label = `${codec} ${bitDepth}-bit`;
-  else if (!lossless && item.quality_kbps) label = `${codec} ${item.quality_kbps}kbps`;
-  return {
-    id: String(id),
-    title: item.title ?? "Unknown",
-    artists: item.artists ?? (item.artist_string ? item.artist_string.split(", ") : []),
-    album: item.album ?? "",
-    durationMs: item.duration_ms ?? 0,
-    trackNumber: item.track_number,
-    releaseYear: item.release_year,
-    artworkUrl: item.artwork_url,
-    explicit: item.is_explicit,
-    format: {
-      codec,
-      bitDepth,
-      sampleRateHz,
-      bitrateKbps: lossless ? undefined : item.quality_kbps,
-      lossless,
-    },
-    qualityLabel: label,
-    hiRes: lossless && (!!bitDepth && bitDepth >= 24 || !!sampleRateHz && sampleRateHz > 48000),
-    streamUrl: `/api/stream/${encodeURIComponent(String(id))}`,
-    source: item.source,
-  };
-}
-
-function normalizeUpstreamSearch(payload: unknown): SearchResults {
-  if (payload && typeof payload === "object") {
-    const obj = payload as Record<string, unknown>;
-    const inner = (obj.results ?? obj.data ?? obj) as Record<string, unknown> | undefined;
-    const rawList = (inner?.tracks ?? inner?.items ?? inner) as unknown;
-    if (Array.isArray(rawList)) {
-      const raw = rawList as RawSearchItem[];
-      const tracks = raw.map(normalizeRawItem);
-      const albums = Array.isArray(inner?.albums)
-        ? (inner.albums as unknown[]).map(normalizeAlbum).filter(Boolean as unknown as (a: unknown) => Album)
-        : [];
-      const artists = Array.isArray(inner?.artists)
-        ? (inner.artists as unknown[]).map(normalizeArtist).filter(Boolean as unknown as (a: unknown) => Artist)
-        : [];
-      return { tracks, albums: albums as Album[], artists: artists as Artist[] };
-    }
-    const tracks = Array.isArray(inner?.tracks) ? (inner!.tracks as Track[]) : [];
-    const albums = Array.isArray(inner?.albums) ? (inner!.albums as Album[]) : [];
-    const artists = Array.isArray(inner?.artists) ? (inner!.artists as Artist[]) : [];
-    if (tracks.length || albums.length || artists.length) return { tracks, albums, artists };
-  }
-  return { tracks: [], albums: [], artists: [] };
-}
-
-function normalizeAlbum(a: unknown): Album | null {
-  if (!a || typeof a !== "object") return null;
-  const o = a as Record<string, unknown>;
-  if (!o.title && !o.name) return null;
-  return {
-    id: String(o.id ?? o.album_id ?? ""),
-    title: String(o.title ?? o.name ?? ""),
-    artists: (o.artists as string[]) ?? (o.artist_string ? String(o.artist_string).split(", ") : []),
-    year: o.year != null ? Number(o.year) : (o.release_year != null ? Number(o.release_year) : undefined),
-    artworkUrl: (o.artwork_url as string) ?? (o.artworkUrl as string),
-    genres: o.genres as string[] | undefined,
-    trackCount: Number(o.track_count ?? o.trackCount ?? (Array.isArray(o.tracks) ? o.tracks.length : 0)),
-    tracks: Array.isArray(o.tracks) ? (o.tracks as Track[]) : [],
-  };
-}
-
-function normalizeArtist(a: unknown): Artist | null {
-  if (!a || typeof a !== "object") return null;
-  const o = a as Record<string, unknown>;
-  if (!o.name) return null;
-  return {
-    id: String(o.id ?? ""),
-    name: String(o.name),
-    artworkUrl: (o.artwork_url as string) ?? (o.artworkUrl as string),
-    albumCount: o.album_count != null ? Number(o.album_count) : undefined,
-    trackCount: o.track_count != null ? Number(o.track_count) : undefined,
-  };
+async function getJson<T = unknown>(url: string, timeoutMs = 15000): Promise<T> {
+  const r = await fetchUpstream(url, undefined, timeoutMs);
+  if (!r.ok) throw new Error(`backend responded ${r.status}`);
+  return (await r.json()) as T;
 }
 
 // ── main handler ─────────────────────────────────────────────────────────────
 export async function handleApiRequest(request: Request, env: ApiEnv): Promise<Response> {
   const url = new URL(request.url);
-  let path = url.pathname.replace(/^\/api\/?/, "").replace(/\/+$/, "");
+  const path = url.pathname.replace(/^\/api\/?/, "").replace(/\/+$/, "");
 
   if (request.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: CORS_HEADERS });
@@ -211,24 +113,22 @@ export async function handleApiRequest(request: Request, env: ApiEnv): Promise<R
     return err("Unauthorized — send your key via the 'x-api-key' header", 401);
   }
 
-  // strip an optional "stream"/"track" style leading segment handled below
   const segments = path.split("/").filter(Boolean);
   const gw = gatewayUrl(env);
-  const mode: ApiMode = gw ? "live" : "demo";
+  const mode: ApiMode = "live";
   const q = url.searchParams;
   const started = Date.now();
+  const region = q.get("region") ?? "";
 
   try {
     // ── GET /api/status ──────────────────────────────────────────────────────
     if (path === "status") {
       let gatewayOnline = false;
-      if (gw) {
-        try {
-          const r = await fetchUpstream(`${gw}/health`, undefined, 6000);
-          gatewayOnline = r.ok;
-        } catch {
-          gatewayOnline = false;
-        }
+      try {
+        const r = await fetchUpstream(`${gw}/health`, undefined, 6000);
+        gatewayOnline = r.ok;
+      } catch {
+        gatewayOnline = false;
       }
       const status: StatusResponse = {
         service: "antra-flux",
@@ -236,12 +136,12 @@ export async function handleApiRequest(request: Request, env: ApiEnv): Promise<R
         mode,
         gatewayUrl: gw,
         gatewayOnline,
-        engine: gw ? "Antra (Python) gateway" : "demo-catalog",
-        formats: ["FLAC", "ALAC", "AAC", "MP3"],
-        maxQuality: gw ? "up to 24-bit/192kHz (depends on source)" : "FLAC 16-bit/44.1kHz (demo)",
+        engine: "YTM backend (WEB_REMIX InnerTube proxy)",
+        formats: ["AAC"],
+        maxQuality: "AAC up to 256 kbps (source-dependent; lossless depends on your stream resolver)",
         endpoints: ENDPOINT_DOCS,
         copyrightNotice:
-          "Streams content via user-configured sources. You are responsible for holding the rights to stream anything you serve.",
+          "Metadata is sourced from the configured YouTube Music backend. Streams are delegated to the resolver you configure (ANTRA_STREAM_TEMPLATE). You are responsible for holding the rights to anything you stream.",
       };
       return json(status);
     }
@@ -249,143 +149,223 @@ export async function handleApiRequest(request: Request, env: ApiEnv): Promise<R
     // ── GET /api/search?q=&kind=&limit= ─────────────────────────────────────
     if (path === "search") {
       const query = q.get("q") ?? q.get("query") ?? "";
-      const kindParam = (q.get("kind") ?? q.get("type") ?? "").toLowerCase();
-      const kind = (["song", "album", "artist"].includes(kindParam) ? kindParam : "song") as
-        | "song"
-        | "album"
-        | "artist";
+      if (!query.trim()) return err("Missing query", 400, "Pass ?q=<search terms>");
+      const kindParam = (q.get("kind") ?? q.get("type") ?? "song").toLowerCase();
+      const kind = (["song", "album", "artist", "all"].includes(kindParam)
+        ? kindParam
+        : "song") as "song" | "album" | "artist" | "all";
       const limit = Math.min(50, Math.max(1, Number(q.get("limit") ?? 25) || 25));
-      const cacheKey = `search:${query}:${kind}:${limit}:${mode}:${gw ?? ""}`;
-      let results: SearchResults | undefined = getCached(cacheKey, 60_000);
+      const cacheKey = `search:${query}:${kind}:${limit}:${gw}`;
+      let results = getCached<ReturnType<typeof normalizeTypedSearch>>(cacheKey, 120_000);
       if (!results) {
-        if (mode === "live" && gw) {
-          const r = await fetchUpstream(
-            `${gw}/search?q=${encodeURIComponent(query)}&kind=${kind}&limit=${limit}`
-          );
-          if (!r.ok) return err("Upstream gateway error", 502, `gateway responded ${r.status}`);
-          results = normalizeUpstreamSearch(await r.json());
+        const enc = encodeURIComponent(query);
+        if (kind === "all") {
+          results = normalizeSearchAggregate(await getJson(`${gw}/search?q=${enc}`));
+        } else if (kind === "song") {
+          results = normalizeTypedSearch(await getJson(`${gw}/search/songs?q=${enc}`), "song");
+        } else if (kind === "album") {
+          results = normalizeTypedSearch(await getJson(`${gw}/search/albums?q=${enc}`), "album");
         } else {
-          results = demoSearch(query, kind, limit);
+          results = normalizeTypedSearch(await getJson(`${gw}/search/artists?q=${enc}`), "artist");
         }
         setCached(cacheKey, results);
       }
-      return json({ query, kind, mode, tookMs: Date.now() - started, results });
+      const sliced = {
+        tracks: results.tracks.slice(0, limit),
+        albums: results.albums.slice(0, limit),
+        artists: results.artists.slice(0, limit),
+        playlists: results.playlists.slice(0, limit),
+      };
+      return json({ query, kind, mode, tookMs: Date.now() - started, results: sliced });
+    }
+
+    // ── GET /api/suggestions?q= (autocomplete) ──────────────────────────────
+    if (path === "suggestions") {
+      const query = q.get("q") ?? "";
+      if (!query.trim()) return json({ suggestions: [] });
+      const enc = encodeURIComponent(query);
+      const suggestions = normalizeSuggestions(await getJson(`${gw}/suggestions?q=${enc}`, 8000));
+      return json({ query, suggestions });
+    }
+
+    // ── GET /api/catalog?region= (home / browse payload) ────────────────────
+    if (path === "catalog") {
+      const cacheKey = `catalog:${region}:${gw}`;
+      const cached = getCached<Record<string, unknown>>(cacheKey, 300_000);
+      if (cached) return json({ ...cached, tookMs: Date.now() - started });
+      const reg = region ? `&region=${encodeURIComponent(region)}` : "";
+      const [trendingRes, newReleasesRes, chartsRes] = await Promise.all([
+        getJson(`${gw}/trending?full=1${reg}`).catch(() => null),
+        getJson(`${gw}/new-releases${reg}`).catch(() => null),
+        getJson(`${gw}/charts?country=US${reg}`).catch(() => null),
+      ]);
+      const trending = trendingRes ? normalizeTrending(trendingRes).slice(0, 30) : [];
+      const newReleases = newReleasesRes ? normalizeNewReleases(newReleasesRes).slice(0, 20) : [];
+      const topArtists = chartsRes ? normalizeChartArtists(chartsRes).slice(0, 24) : [];
+      const payload = {
+        mode,
+        source: "youtube-music",
+        backend: gw,
+        trending,
+        newReleases,
+        topArtists,
+        tookMs: Date.now() - started,
+      };
+      setCached(cacheKey, payload);
+      return json(payload);
     }
 
     // ── GET /api/track/{id} ─────────────────────────────────────────────────
     if (segments[0] === "track" && segments[1]) {
       const id = decodeURIComponent(segments[1]);
-      if (mode === "live" && gw) {
-        const r = await fetchUpstream(`${gw}/track/${encodeURIComponent(id)}`);
-        if (!r.ok) return err("Track not found upstream", r.status === 404 ? 404 : 502);
-        return json(await r.json());
+      const enc = encodeURIComponent(id);
+      const detail = normalizeTrackDetail(await getJson(`${gw}/song/${enc}`), id);
+      // best-effort lyrics attach
+      let lyrics: ReturnType<typeof normalizeLyrics> | undefined;
+      try {
+        lyrics = normalizeLyrics(await getJson(`${gw}/lyrics/${enc}`, 8000), id);
+      } catch {
+        lyrics = undefined;
       }
-      const track = demoTrackById(id);
-      if (!track) return err("Track not found in demo catalog", 404);
-      return json(track);
+      return json({
+        mode,
+        track: detail.track,
+        queue: detail.queue,
+        playlistId: detail.playlistId,
+        lyricsBrowseId: detail.lyricsBrowseId,
+        relatedBrowseId: detail.relatedBrowseId,
+        lyrics: lyrics?.available
+          ? { plain: lyrics.plain, syncedLrc: lyrics.syncedLrc, hasSynced: lyrics.hasSynced }
+          : undefined,
+        streamUrl: `/api/stream/${enc}`,
+        streamAvailable: !!env.STREAM_TEMPLATE,
+      });
     }
 
     // ── GET /api/album/{id} ─────────────────────────────────────────────────
     if (segments[0] === "album" && segments[1]) {
       const id = decodeURIComponent(segments[1]);
-      if (mode === "live" && gw) {
-        const r = await fetchUpstream(`${gw}/album/${encodeURIComponent(id)}`);
-        if (!r.ok) return err("Album not found upstream", r.status === 404 ? 404 : 502);
-        return json(await r.json());
+      const enc = encodeURIComponent(id);
+      const albumRaw = await getJson(`${gw}/album/${enc}`);
+      // Backend quirk: album tracklists carry bogus artists. Resolve the real
+      // artist from the first track's /song metadata and repair the tracklist.
+      let realArtist: string[] | undefined;
+      try {
+        const data = ((albumRaw as { data?: Record<string, unknown> }).data ?? albumRaw) as Record<string, unknown>;
+        const tracks = (data?.tracks as { videoId?: string }[] | undefined) ?? [];
+        const firstVideoId = tracks[0]?.videoId;
+        if (firstVideoId) {
+          const songDetail = normalizeTrackDetail(
+            await getJson(`${gw}/song/${encodeURIComponent(firstVideoId)}`, 10000)
+          );
+          realArtist = songDetail.track?.artists;
+        }
+      } catch {
+        realArtist = undefined;
       }
-      const album = demoAlbumById(id);
-      if (!album) return err("Album not found in demo catalog", 404);
-      return json(album);
+      const album = normalizeAlbumDetail(albumRaw, id, realArtist);
+      if (realArtist?.length && !album.artists.length) album.artists = realArtist;
+      return json({ mode, ...album });
+    }
+
+    // ── GET /api/playlist/{id} ──────────────────────────────────────────────
+    if (segments[0] === "playlist" && segments[1]) {
+      const id = decodeURIComponent(segments[1]);
+      const cursor = q.get("cursor");
+      const cursorPart = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
+      const raw = await getJson(`${gw}/playlist/${encodeURIComponent(id)}${cursorPart}`);
+      const playlist = normalizePlaylistDetail(raw, id);
+      const data = ((raw as { data?: Record<string, unknown> }).data ?? raw) as Record<string, unknown>;
+      return json({
+        mode,
+        ...playlist,
+        continuation: (data?.continuation as string) ?? undefined,
+      });
+    }
+
+    // ── GET /api/artist/{id} ────────────────────────────────────────────────
+    if (segments[0] === "artist" && segments[1]) {
+      const id = decodeURIComponent(segments[1]);
+      const enc = encodeURIComponent(id);
+      const page = normalizeArtistPage(await getJson(`${gw}/artist/${enc}`), id);
+      return json({ mode, ...page });
+    }
+
+    // ── GET /api/related/{id} ───────────────────────────────────────────────
+    if (segments[0] === "related" && segments[1]) {
+      const id = decodeURIComponent(segments[1]);
+      const raw = await getJson(`${gw}/related/${encodeURIComponent(id)}`);
+      const tracks = normalizeRelated(raw);
+      return json({ mode, trackId: id, tracks });
+    }
+
+    // ── GET /api/radio/{id}?cursor= ─────────────────────────────────────────
+    if (segments[0] === "radio" && segments[1]) {
+      const id = decodeURIComponent(segments[1]);
+      const cursor = q.get("cursor");
+      const shuffle = q.get("shuffle");
+      const params = new URLSearchParams();
+      if (cursor) params.set("cursor", cursor);
+      if (shuffle) params.set("shuffle", shuffle);
+      const qs = params.toString() ? `?${params.toString()}` : "";
+      const raw = await getJson(`${gw}/radio/${encodeURIComponent(id)}${qs}`);
+      const data = ((raw as { data?: Record<string, unknown> }).data ?? raw) as Record<string, unknown>;
+      const rawTracks = (data?.tracks as Record<string, unknown>[]) ?? [];
+      // radio rows share the song-item shape — normalize through the typed path
+      const normalized = normalizeTypedSearch({ data: { items: rawTracks } }, "song").tracks;
+      return json({
+        mode,
+        trackId: id,
+        playlistId: (data?.playlistId as string) ?? undefined,
+        tracks: normalized,
+        continuation: (data?.continuation as string) ?? undefined,
+      });
     }
 
     // ── GET /api/lyrics/{id} ────────────────────────────────────────────────
     if (segments[0] === "lyrics" && segments[1]) {
       const id = decodeURIComponent(segments[1]);
-      if (mode === "live" && gw) {
-        const r = await fetchUpstream(`${gw}/lyrics/${encodeURIComponent(id)}`);
-        if (!r.ok) return err("Lyrics not found upstream", r.status === 404 ? 404 : 502);
-        return json(await r.json());
-      }
-      const track = demoTrackById(id);
-      if (!track) return err("Track not found in demo catalog", 404);
-      return json({
-        trackId: id,
-        title: track.title,
-        artists: track.artists,
-        plain: track.lyrics?.plain ?? "",
-        syncedLrc: track.lyrics?.syncedLrc ?? "",
-        hasSynced: !!track.lyrics?.syncedLrc,
-      });
+      const lyrics = normalizeLyrics(await getJson(`${gw}/lyrics/${encodeURIComponent(id)}`, 8000), id);
+      return json({ mode, ...lyrics });
     }
 
     // ── GET /api/stream/{id} ────────────────────────────────────────────────
     if (segments[0] === "stream" && segments[1]) {
       const id = decodeURIComponent(segments[1]);
-      if (mode === "demo") {
-        const file = demoFileFor(id);
-        if (!file) return err("Stream not found in demo catalog", 404);
-        // Redirect to the bundled lossless file (same origin).
-        return new Response(null, {
-          status: 302,
-          headers: {
-            Location: `/demo-audio/${encodeURIComponent(file)}.flac`,
-            ...CORS_HEADERS,
-          },
-        });
+      const template = (env.STREAM_TEMPLATE ?? "").trim();
+      if (!template) {
+        return err(
+          "No stream source configured",
+          502,
+          "This deployment serves metadata only. Set ANTRA_STREAM_TEMPLATE (e.g. 'https://your-resolver.example/stream/{id}') to enable playback."
+        );
       }
-      // live: proxy the gateway's stream, preserving Range for seeking
-      const range = request.headers.get("range");
-      const upstream = await fetchUpstream(
-        `${gw}/stream/${encodeURIComponent(id)}`,
-        { headers: range ? { Range: range } : {} },
-        0 || 30000
-      );
-      if (!upstream.ok && upstream.status !== 206) {
-        return err("Upstream stream unavailable", 502, `gateway responded ${upstream.status}`);
-      }
-      const ct = upstream.headers.get("content-type") ?? "audio/flac";
-      const headers: Record<string, string> = {
-        "Content-Type": ct,
-        "Accept-Ranges": "bytes",
-        ...CORS_HEADERS,
-      };
-      const cl = upstream.headers.get("content-length");
-      if (cl) headers["Content-Length"] = cl;
-      const cr = upstream.headers.get("content-range");
-      if (cr) headers["Content-Range"] = cr;
-      return new Response(upstream.body, { status: upstream.status === 206 ? 206 : 200, headers });
-    }
-
-    // ── GET /api/catalog  (browse helper) ───────────────────────────────────
-    if (path === "catalog") {
-      if (mode === "live" && gw) {
-        const r = await fetchUpstream(`${gw}/catalog`);
-        if (!r.ok) return err("Upstream gateway error", 502);
-        return json(await r.json());
-      }
-      return json({
-        mode,
-        albums: DEMO_ALBUMS,
-        artists: DEMO_ARTISTS,
-        tracks: DEMO_TRACKS,
-        version: DEMO_VERSION,
+      const target = template.replace(/\{id\}/g, encodeURIComponent(id));
+      return new Response(null, {
+        status: 302,
+        headers: { Location: target, "Cache-Control": "no-store", ...CORS_HEADERS },
       });
     }
 
     return err("Not found", 404, `No API route matches /api/${path}`);
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
-    return err("Internal error", 500, msg);
+    return err("Upstream metadata backend error", 502, msg);
   }
 }
 
 // ── endpoint docs (served via /api/status + rendered on the API page) ────────
 export const ENDPOINT_DOCS = [
-  { method: "GET", path: "/api/status", description: "Service status, mode (demo/live), capability list" },
-  { method: "GET", path: "/api/search", description: "Search the catalog — params: q, kind (song|album|artist), limit (1-50)" },
-  { method: "GET", path: "/api/catalog", description: "Browse everything currently indexed (albums, artists, tracks)" },
-  { method: "GET", path: "/api/track/{id}", description: "Full metadata for one track (format, quality, ISRC, artwork)" },
-  { method: "GET", path: "/api/album/{id}", description: "Album with its ordered tracklist" },
-  { method: "GET", path: "/api/stream/{id}", description: "Stream lossless audio — supports HTTP Range seeking, CORS-enabled for any app" },
-  { method: "GET", path: "/api/lyrics/{id}", description: "Lyrics — plain text and synced LRC when available" },
+  { method: "GET", path: "/api/status", description: "Service status, backend health, capability list" },
+  { method: "GET", path: "/api/search", description: "Search YouTube Music — params: q, kind (song|album|artist|all), limit (1-50)" },
+  { method: "GET", path: "/api/suggestions", description: "Search autocomplete — params: q" },
+  { method: "GET", path: "/api/catalog", description: "Browse payload: trending songs, new releases, top artists — param: region" },
+  { method: "GET", path: "/api/track/{id}", description: "Full track metadata + queue context + lyrics (id = YouTube video id)" },
+  { method: "GET", path: "/api/album/{id}", description: "Album with ordered tracklist (id = MPREb_… browse id)" },
+  { method: "GET", path: "/api/playlist/{id}", description: "Playlist with tracks — infinite via ?cursor=" },
+  { method: "GET", path: "/api/artist/{id}", description: "Artist page: top tracks, albums, singles, videos, related" },
+  { method: "GET", path: "/api/related/{id}", description: "Related tracks for a song" },
+  { method: "GET", path: "/api/radio/{id}", description: "Infinite radio queue for a seed song — ?cursor= to continue" },
+  { method: "GET", path: "/api/lyrics/{id}", description: "Lyrics — plain text (synced when available)" },
+  { method: "GET", path: "/api/stream/{id}", description: "Audio playback — 302 to your configured resolver (ANTRA_STREAM_TEMPLATE)" },
 ];

@@ -12,10 +12,12 @@ import { handleApiRequest } from "../src/lib/api-core";
 interface Env {
   /** Static-assets binding generated from [assets] in wrangler.toml */
   ASSETS: { fetch(request: Request): Promise<Response> };
-  /** Optional: base URL of your self-hosted Antra gateway (live mode) */
+  /** Base URL of your YTM metadata backend (defaults to the built-in worker URL) */
   ANTRA_GATEWAY_URL?: string;
   /** Optional: shared secret clients must send as x-api-key (or ?key=) */
   ANTRA_API_KEY?: string;
+  /** Optional: stream resolver URL template with {id} placeholder */
+  ANTRA_STREAM_TEMPLATE?: string;
 }
 
 export default {
@@ -26,6 +28,7 @@ export default {
       return handleApiRequest(request, {
         GATEWAY_URL: env.ANTRA_GATEWAY_URL,
         API_KEY: env.ANTRA_API_KEY,
+        STREAM_TEMPLATE: env.ANTRA_STREAM_TEMPLATE,
       });
     }
 

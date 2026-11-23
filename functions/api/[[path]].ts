@@ -15,5 +15,6 @@ export async function onRequest(context: PagesContext): Promise<Response> {
   return handleApiRequest(context.request, {
     GATEWAY_URL: context.env.ANTRA_GATEWAY_URL,
     API_KEY: context.env.ANTRA_API_KEY,
+    STREAM_TEMPLATE: context.env.ANTRA_STREAM_TEMPLATE,
   });
 }

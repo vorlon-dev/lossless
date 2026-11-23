@@ -1,8 +1,7 @@
 "use client";
 // ─── Antra Flux — frontend API client ────────────────────────────────────────
-// Talks to this site's own /api/* endpoints by default, or straight to a
-// user-configured YTM metadata backend (CORS-enabled) when one is set in
-// Settings. Normalization logic is shared with the server via src/lib/ytm.ts.
+// Talks to this site's own /api/* endpoints by default, or straight to the
+// YTM metadata backend (CORS-enabled) when one is set in Settings.
 import type { Album, CatalogResponse, SearchResults, StatusResponse } from "./types";
 import {
   normalizeAlbumDetail,
@@ -62,7 +61,7 @@ export async function fetchSearch(p: SearchParams): Promise<SearchResults> {
         tracks: n.tracks.slice(0, limit),
         albums: n.albums.slice(0, limit),
         artists: n.artists.slice(0, limit),
-        playlists: n.playlists.slice(0, 12),
+        playlists: n.playlists.slice(0, limit),
       };
     }
     const path = kind === "song" ? "/search/songs" : kind === "album" ? "/search/albums" : "/search/artists";
@@ -98,6 +97,6 @@ export async function fetchAlbum(
 export async function fetchLyrics(
   id: string,
   signal?: AbortSignal
-): Promise<{ available: boolean; plain: string; hasSynced: boolean; source?: string }> {
+): Promise<{ available: boolean; plain: string; hasSynced: boolean }> {
   return req(`/api/lyrics/${encodeURIComponent(id)}`, signal);
 }
